@@ -7,15 +7,12 @@
 package es
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"strings"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pkg/errors"
+	olivere "github.com/olivere/elastic/v7"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,7 +25,7 @@ func resourceElasticsearchIndexLifecyclePolicy() *schema.Resource {
 		Delete: resourceElasticsearchIndexLifecyclePolicyDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -38,17 +35,44 @@ func resourceElasticsearchIndexLifecyclePolicy() *schema.Resource {
 				Required: true,
 			},
 			"policy": {
-				Type:             schema.TypeString,
-				Required:         true,
-				DiffSuppressFunc: suppressEquivalentJSON,
+				Type:     schema.TypeString,
+				Required: true,
+				DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+					var err error
+					if oldValue == "" {
+						oldValue = "{}"
+					}
+					if newValue == "" {
+						newValue = "{}"
+					}
+
+					oldILM := &olivere.XPackIlmGetLifecycleResponse{}
+					if err = json.Unmarshal([]byte(oldValue), oldILM); err != nil {
+						fmt.Printf("[ERR] Error when converting old ILM: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting old ILM: %s\ndata: %s", err.Error(), oldValue)
+					}
+					newILM := &olivere.XPackIlmGetLifecycleResponse{}
+					if err = json.Unmarshal([]byte(newValue), newILM); err != nil {
+						fmt.Printf("[ERR] Error when converting new ILM: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting new ILM: %s\ndata: %s", err.Error(), oldValue)
+					}
+
+					diff, err := esHandler.ILMDiff(oldILM, newILM)
+					if err != nil {
+						fmt.Printf("[ERR] Error when diff component template: %s", err.Error())
+						log.Errorf("Error when diff component template: %s", err.Error())
+					}
+
+					return diff == ""
+				},
 			},
 		},
 	}
 }
 
 // resourceElasticsearchIndexLifecyclePolicyCreate create new index lifecycle policy
-func resourceElasticsearchIndexLifecyclePolicyCreate(d *schema.ResourceData, meta interface{}) error {
-	err := createIndexLifecyclePolicy(d, meta)
+func resourceElasticsearchIndexLifecyclePolicyCreate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createIndexLifecyclePolicy(d, meta)
 	if err != nil {
 		return err
 	}
@@ -57,8 +81,8 @@ func resourceElasticsearchIndexLifecyclePolicyCreate(d *schema.ResourceData, met
 }
 
 // resourceElasticsearchIndexLifecyclePolicyUpdate update index lifecycle policy
-func resourceElasticsearchIndexLifecyclePolicyUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createIndexLifecyclePolicy(d, meta)
+func resourceElasticsearchIndexLifecyclePolicyUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createIndexLifecyclePolicy(d, meta)
 	if err != nil {
 		return err
 	}
@@ -66,82 +90,42 @@ func resourceElasticsearchIndexLifecyclePolicyUpdate(d *schema.ResourceData, met
 }
 
 // resourceElasticsearchIndexLifecyclePolicyRead read index lifecycle policy
-func resourceElasticsearchIndexLifecyclePolicyRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexLifecyclePolicyRead(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.ILM.GetLifecycle(
-		client.API.ILM.GetLifecycle.WithContext(context.Background()),
-		client.API.ILM.GetLifecycle.WithPretty(),
-		client.API.ILM.GetLifecycle.WithPolicy(id),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+	policy, err := client.ILMGet(id)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Index lifecycle policy %s not found - removing from state", id)
-			log.Warnf("Index lifecycle policy %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when get lifecycle policy %s: %s", id, res.String())
+	if policy == nil {
+		fmt.Printf("[WARN] Index lifecycle policy %s not found - removing from state", id)
+		log.Warnf("Index lifecycle policy %s not found - removing from state", id)
+		d.SetId("")
+		return nil
 	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
+
+	if err = d.Set("name", id); err != nil {
 		return err
 	}
 
-	log.Debugf("Get life cycle policy %s successfully:\n%s", id, string(b))
-
-	policyTemp := make(map[string]interface{})
-	err = json.Unmarshal(b, &policyTemp)
+	flattenPolicy, err := convertInterfaceToJsonString(policy)
 	if err != nil {
 		return err
 	}
-	policy := policyTemp[id].(map[string]interface{})["policy"]
-	policyTemp = map[string]interface{}{
-		"policy": policy,
-	}
-
-	log.Debugf("Policy : %+v", policyTemp)
-
-	d.Set("name", id)
-
-	flattenPolicy, err := convertInterfaceToJsonString(policyTemp)
-	if err != nil {
+	if err = d.Set("policy", flattenPolicy); err != nil {
 		return err
 	}
-	d.Set("policy", flattenPolicy)
 	return nil
 }
 
 // resourceElasticsearchIndexLifecyclePolicyDelete delete index lifecycle policy
-func resourceElasticsearchIndexLifecyclePolicyDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexLifecyclePolicyDelete(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.ILM.DeleteLifecycle(
-		id,
-		client.API.ILM.DeleteLifecycle.WithContext(context.Background()),
-		client.API.ILM.DeleteLifecycle.WithPretty(),
-	)
-
-	if err != nil {
+	client := meta.(eshandler.ElasticsearchHandler)
+	if err = client.ILMDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Index lifecycle policy %s not found - removing from state", id)
-			log.Warnf("Index lifecycle policy %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when delete lifecycle policy %s: %s", id, res.String())
 	}
 
 	d.SetId("")
@@ -149,26 +133,18 @@ func resourceElasticsearchIndexLifecyclePolicyDelete(d *schema.ResourceData, met
 }
 
 // createIndexLifecyclePolicy create or update index lifecycle policy
-func createIndexLifecyclePolicy(d *schema.ResourceData, meta interface{}) error {
+func createIndexLifecyclePolicy(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 	policy := d.Get("policy").(string)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.ILM.PutLifecycle(
-		name,
-		client.API.ILM.PutLifecycle.WithContext(context.Background()),
-		client.API.ILM.PutLifecycle.WithPretty(),
-		client.API.ILM.PutLifecycle.WithBody(strings.NewReader(policy)),
-	)
-
-	if err != nil {
+	data := &olivere.XPackIlmGetLifecycleResponse{}
+	if err = json.Unmarshal([]byte(policy), data); err != nil {
 		return err
 	}
 
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add lifecycle policy %s: %s", name, res.String())
+	client := meta.(eshandler.ElasticsearchHandler)
+	if err = client.ILMUpdate(name, data); err != nil {
+		return err
 	}
 
 	return nil

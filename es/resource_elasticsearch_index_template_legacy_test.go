@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -54,7 +54,7 @@ func testCheckElasticsearchIndexTemplateLegacyExists(name string) resource.TestC
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
+		client := meta.(eshandler.ElasticsearchHandler).Client()
 		res, err := client.API.Indices.GetTemplate(
 			client.API.Indices.GetTemplate.WithName(rs.Primary.ID),
 			client.API.Indices.GetTemplate.WithContext(context.Background()),
@@ -77,14 +77,17 @@ func testCheckElasticsearchIndexTemplateLegacyDestroy(s *terraform.State) error 
 		if rs.Type != "elasticsearch_index_template_legacy" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Indices.DeleteTemplate(
-			rs.Primary.ID,
-			client.API.Indices.DeleteTemplate.WithContext(context.Background()),
-			client.API.Indices.DeleteTemplate.WithPretty(),
+		client := meta.(eshandler.ElasticsearchHandler).Client()
+		res, err := client.API.Indices.GetTemplate(
+			client.API.Indices.GetTemplate.WithName(rs.Primary.ID),
+			client.API.Indices.GetTemplate.WithContext(context.Background()),
+			client.API.Indices.GetTemplate.WithPretty(),
 		)
 		if err != nil {
 			return err

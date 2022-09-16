@@ -15,7 +15,7 @@ gen:
 	rm -f aws/internal/keyvaluetags/*_gen.go
 	go generate ./...
 
-test: fmtcheck
+test: fmt fmtcheck
 	go test $(TEST) -timeout=30s -parallel=4
 
 testacc: fmt fmtcheck
@@ -93,7 +93,7 @@ trial-license:
 	curl -XPOST -u ${ELASTICSEARCH_USERNAME}:${ELASTICSEARCH_PASSWORD} ${ELASTICSEARCH_URLS}/_license/start_trial?acknowledge=true
 
 start-pods: clean-pods
-	kubectl run elasticsearch --image docker.elastic.co/elasticsearch/elasticsearch:8.0.1 --port "9200" --expose --env "cluster.name=test" --env "discovery.type=single-node" --env "ELASTIC_PASSWORD=changeme" --env "xpack.security.enabled=true" --env "ES_JAVA_OPTS=-Xms512m -Xmx512m" --env "path.repo=/tmp" --limits "cpu=500m,memory=1024Mi"
+	kubectl run elasticsearch --image docker.elastic.co/elasticsearch/elasticsearch:8.4.1 --port "9200" --expose --env "cluster.name=test" --env "discovery.type=single-node" --env "ELASTIC_PASSWORD=changeme" --env "xpack.security.enabled=true" --env "ES_JAVA_OPTS=-Xms512m -Xmx512m" --env "path.repo=/tmp" --limits "cpu=500m,memory=1024Mi"
 	echo "Waiting for Elasticsearch availability"
 	until curl -s http://elasticsearch:9200 | grep -q 'missing authentication credentials'; do sleep 30; done;
 	echo "Enable trial license"

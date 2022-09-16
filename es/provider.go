@@ -13,17 +13,24 @@ import (
 	"time"
 
 	"github.com/coreos/go-semver/semver"
+	"github.com/disaster37/es-handler/v8"
 	elastic "github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 )
+
+var logEntry *logrus.Entry
+var esHandler eshandler.ElasticsearchHandler
 
 // Provider permiit to init the terraform provider
 func Provider() *schema.Provider {
 	return &schema.Provider{
+
 		Schema: map[string]*schema.Schema{
 			"urls": {
 				Type:        schema.TypeString,
@@ -67,6 +74,12 @@ func Provider() *schema.Provider {
 				Default:     10,
 				Description: "Wait time in second before retry connexion",
 			},
+			"debug": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "Set logger to debug on Elasticsearch client",
+			},
 		},
 
 		ResourcesMap: map[string]*schema.Resource{
@@ -86,12 +99,12 @@ func Provider() *schema.Provider {
 			"elasticsearch_ingest_pipeline":           resourceElasticsearchIngestPipeline(),
 		},
 
-		ConfigureFunc: providerConfigure,
+		ConfigureContextFunc: providerConfigure,
 	}
 }
 
 // providerConfigure permit to initialize the rest client to access on Elasticsearch API
-func providerConfigure(d *schema.ResourceData) (interface{}, error) {
+func providerConfigure(ctx context.Context, d *schema.ResourceData) (interface{}, diag.Diagnostics) {
 
 	var (
 		data map[string]interface{}
@@ -104,6 +117,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	password := d.Get("password").(string)
 	retry := d.Get("retry").(int)
 	waitBeforeRetry := d.Get("wait_before_retry").(int)
+	debug := d.Get("debug").(bool)
 	transport := &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
 		TLSClientConfig: &tls.Config{},
@@ -112,7 +126,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	for _, rawURL := range URLs {
 		_, err := url.Parse(rawURL)
 		if err != nil {
-			return nil, err
+			return nil, diag.FromErr(err)
 		}
 	}
 
@@ -124,7 +138,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 		cfg.Username = username
 		cfg.Password = password
 	}
-	if insecure == true {
+	if insecure {
 		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 	// If a cacertFile has been specified, use that for cert validation
@@ -136,24 +150,32 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 		transport.TLSClientConfig.RootCAs = caCertPool
 	}
 	cfg.Transport = transport
-	client, err := elastic.NewClient(cfg)
-	if err != nil {
-		return nil, err
+
+	logger := log.New()
+	if debug {
+		logger.SetLevel(log.DebugLevel)
 	}
+	logEntry = log.NewEntry(logger)
+
+	client, err := eshandler.NewElasticsearchHandler(cfg, logEntry)
+	if err != nil {
+		return nil, diag.FromErr(err)
+	}
+	esHandler = client
 
 	// Test connexion and check elastic version to use the right Version
 	nbFailed := 0
 	isOnline := false
 	var res *esapi.Response
-	for isOnline == false {
-		res, err = client.API.Info(
-			client.API.Info.WithContext(context.Background()),
+	for !isOnline {
+		res, err = client.Client().API.Info(
+			client.Client().API.Info.WithContext(context.Background()),
 		)
-		if err == nil && res.IsError() == false {
+		if err == nil && !res.IsError() {
 			isOnline = true
 		} else {
 			if nbFailed == retry {
-				return nil, err
+				return nil, diag.FromErr(err)
 			}
 			nbFailed++
 			time.Sleep(time.Duration(waitBeforeRetry) * time.Second)
@@ -162,10 +184,10 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 
 	defer res.Body.Close()
 	if res.IsError() {
-		return nil, errors.Errorf("Error when get info about Elasticsearch client: %s", res.String())
+		return nil, diag.FromErr(errors.Errorf("Error when get info about Elasticsearch client: %s", res.String()))
 	}
 	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
-		return nil, err
+		return nil, diag.FromErr(err)
 	}
 	version := data["version"].(map[string]interface{})["number"].(string)
 	log.Debugf("Server: %s", version)
@@ -174,7 +196,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	vMinimal := semver.New("8.0.0")
 
 	if vCurrent.LessThan(*vMinimal) {
-		return nil, errors.New("Elasticsearch is older than 8.0.0")
+		return nil, diag.FromErr(errors.New("Elasticsearch is older than 8.0.0"))
 	}
 
 	return client, nil

@@ -6,16 +6,12 @@
 package es
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"strings"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	olivere "github.com/olivere/elastic/v7"
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,7 +24,7 @@ func resourceElasticsearchIndexTemplate() *schema.Resource {
 		Delete: resourceElasticsearchIndexTemplateDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -38,18 +34,46 @@ func resourceElasticsearchIndexTemplate() *schema.Resource {
 				Required: true,
 			},
 			"template": {
-				Type:             schema.TypeString,
-				Required:         true,
-				DiffSuppressFunc: suppressEquivalentJSON,
+				Type:     schema.TypeString,
+				Required: true,
+				DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+					var err error
+
+					if oldValue == "" {
+						oldValue = "{}"
+					}
+					if newValue == "" {
+						newValue = "{}"
+					}
+
+					oldIndexTemplate := &olivere.IndicesGetIndexTemplate{}
+					if err = json.Unmarshal([]byte(oldValue), oldIndexTemplate); err != nil {
+						fmt.Printf("[ERR] Error when converting old index template: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting old index template: %s\ndata: %s", err.Error(), oldValue)
+					}
+					newIndexTemplate := &olivere.IndicesGetIndexTemplate{}
+					if err = json.Unmarshal([]byte(newValue), newIndexTemplate); err != nil {
+						fmt.Printf("[ERR] Error when converting new index template: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting new index template: %s\ndata: %s", err.Error(), oldValue)
+					}
+
+					diff, err := esHandler.IndexTemplateDiff(oldIndexTemplate, newIndexTemplate)
+					if err != nil {
+						fmt.Printf("[ERR] Error when diff index template: %s", err.Error())
+						log.Errorf("Error when diff index template: %s", err.Error())
+					}
+
+					return diff == ""
+				},
 			},
 		},
 	}
 }
 
 // resourceElasticsearchIndexTemplateCreate create index template
-func resourceElasticsearchIndexTemplateCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexTemplateCreate(d *schema.ResourceData, meta interface{}) (err error) {
 
-	err := createIndexTemplate(d, meta)
+	err = createIndexTemplate(d, meta)
 	if err != nil {
 		return err
 	}
@@ -58,8 +82,8 @@ func resourceElasticsearchIndexTemplateCreate(d *schema.ResourceData, meta inter
 }
 
 // resourceElasticsearchIndexTemplateUpdate update index template
-func resourceElasticsearchIndexTemplateUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createIndexTemplate(d, meta)
+func resourceElasticsearchIndexTemplateUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createIndexTemplate(d, meta)
 	if err != nil {
 		return err
 	}
@@ -67,83 +91,46 @@ func resourceElasticsearchIndexTemplateUpdate(d *schema.ResourceData, meta inter
 }
 
 // resourceElasticsearchIndexTemplateRead read index template
-func resourceElasticsearchIndexTemplateRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexTemplateRead(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Indices.GetIndexTemplate(
-		client.API.Indices.GetIndexTemplate.WithName(id),
-		client.API.Indices.GetIndexTemplate.WithContext(context.Background()),
-		client.API.Indices.GetIndexTemplate.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+	it, err := client.IndexTemplateGet(id)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Index template %s not found - removing from state", id)
-			log.Warnf("Index template %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when get index template %s: %s", id, res.String())
 
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return err
-	}
-	indexTemplate := &olivere.IndicesGetIndexTemplateResponse{}
-	if err := json.Unmarshal(b, indexTemplate); err != nil {
-		return err
-	}
-
-	if len(indexTemplate.IndexTemplates) == 0 {
+	if it == nil {
 		fmt.Printf("[WARN] Index template %s not found - removing from state", id)
 		log.Warnf("Index template %s not found - removing from state", id)
 		d.SetId("")
 		return nil
 	}
 
-	indexTemplateJSON, err := json.Marshal(indexTemplate.IndexTemplates[0].IndexTemplate)
+	indexTemplateJSON, err := json.Marshal(it)
 	if err != nil {
 		return err
 	}
 
 	log.Debugf("Get index template %s successfully:%+v", id, string(indexTemplateJSON))
-	d.Set("name", d.Id())
-	d.Set("template", string(indexTemplateJSON))
+	if err = d.Set("name", d.Id()); err != nil {
+		return err
+	}
+	if err = d.Set("template", string(indexTemplateJSON)); err != nil {
+		return err
+	}
 	return nil
 }
 
 // resourceElasticsearchIndexTemplateDelete delete index template
-func resourceElasticsearchIndexTemplateDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexTemplateDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Indices.DeleteIndexTemplate(
-		id,
-		client.API.Indices.DeleteIndexTemplate.WithContext(context.Background()),
-		client.API.Indices.DeleteIndexTemplate.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	if err != nil {
+	if err = client.IndexTemplateDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Index template %s not found - removing from state", id)
-			log.Warnf("Index template %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when delete index template %s: %s", id, res.String())
-
 	}
 
 	d.SetId("")
@@ -151,26 +138,18 @@ func resourceElasticsearchIndexTemplateDelete(d *schema.ResourceData, meta inter
 }
 
 // createIndexTemplate create or update index template
-func createIndexTemplate(d *schema.ResourceData, meta interface{}) error {
+func createIndexTemplate(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 	template := d.Get("template").(string)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Indices.PutIndexTemplate(
-		name,
-		strings.NewReader(template),
-		client.API.Indices.PutIndexTemplate.WithContext(context.Background()),
-		client.API.Indices.PutIndexTemplate.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	if err != nil {
+	data := &olivere.IndicesGetIndexTemplate{}
+	if err = json.Unmarshal([]byte(template), data); err != nil {
 		return err
 	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add index template %s: %s", name, res.String())
+	if err = client.IndexTemplateUpdate(name, data); err != nil {
+		return err
 	}
 
 	return nil

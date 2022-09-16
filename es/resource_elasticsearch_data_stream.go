@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	"github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -28,7 +28,7 @@ func resourceElasticsearchDataStream() *schema.Resource {
 		Delete: resourceElasticsearchDataStreamDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -42,9 +42,9 @@ func resourceElasticsearchDataStream() *schema.Resource {
 }
 
 // resourceElasticsearchDataStreamCreate create data stream
-func resourceElasticsearchDataStreamCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchDataStreamCreate(d *schema.ResourceData, meta interface{}) (err error) {
 
-	err := createDataStream(d, meta)
+	err = createDataStream(d, meta)
 	if err != nil {
 		return err
 	}
@@ -53,10 +53,10 @@ func resourceElasticsearchDataStreamCreate(d *schema.ResourceData, meta interfac
 }
 
 // resourceElasticsearchDataStreamRead read data stream
-func resourceElasticsearchDataStreamRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchDataStreamRead(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
+	client := meta.(eshandler.ElasticsearchHandler).Client()
 	res, err := client.API.Indices.GetDataStream(
 		client.API.Indices.GetDataStream.WithName(id),
 		client.API.Indices.GetDataStream.WithContext(context.Background()),
@@ -98,16 +98,18 @@ func resourceElasticsearchDataStreamRead(d *schema.ResourceData, meta interface{
 	}
 
 	log.Debugf("Get data stream %s successfully:%+v", id, dataStreamJSON)
-	d.Set("name", d.Id())
+	if err = d.Set("name", d.Id()); err != nil {
+		return err
+	}
 	return nil
 }
 
 // resourceElasticsearchDataStreamDelete delete data stream
-func resourceElasticsearchDataStreamDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchDataStreamDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
+	client := meta.(eshandler.ElasticsearchHandler).Client()
 	res, err := client.API.Indices.DeleteDataStream(
 		[]string{id},
 		client.API.Indices.DeleteDataStream.WithContext(context.Background()),
@@ -136,10 +138,10 @@ func resourceElasticsearchDataStreamDelete(d *schema.ResourceData, meta interfac
 }
 
 // createDataStream create a data stream
-func createDataStream(d *schema.ResourceData, meta interface{}) error {
+func createDataStream(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 
-	client := meta.(*elastic.Client)
+	client := meta.(eshandler.ElasticsearchHandler).Client()
 	res, err := client.API.Indices.CreateDataStream(
 		name,
 		client.API.Indices.CreateDataStream.WithContext(context.Background()),

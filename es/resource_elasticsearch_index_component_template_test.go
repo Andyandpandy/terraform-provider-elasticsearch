@@ -1,11 +1,10 @@
 package es
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -54,18 +53,13 @@ func testCheckElasticsearchIndexComponentTemplateExists(name string) resource.Te
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Cluster.GetComponentTemplate(
-			client.API.Cluster.GetComponentTemplate.WithName(rs.Primary.ID),
-			client.API.Cluster.GetComponentTemplate.WithContext(context.Background()),
-			client.API.Cluster.GetComponentTemplate.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		ic, err := client.ComponentTemplateGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get index component template %s: %s", rs.Primary.ID, res.String())
+		if ic == nil {
+			return errors.Errorf("Component template %s not found", rs.Primary.ID)
 		}
 
 		return nil
@@ -78,25 +72,22 @@ func testCheckElasticsearchIndexComponentTemplateDestroy(s *terraform.State) err
 			continue
 		}
 
+		if rs.Primary.ID != "test" {
+			continue
+		}
+
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Cluster.DeleteComponentTemplate(
-			rs.Primary.ID,
-			client.API.Cluster.DeleteComponentTemplate.WithContext(context.Background()),
-			client.API.Cluster.DeleteComponentTemplate.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		ic, err := client.ComponentTemplateGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-				return nil
-			}
+		if ic != nil {
+			return fmt.Errorf("Index component template %q still exists", rs.Primary.ID)
 		}
 
-		return fmt.Errorf("Index component template %q still exists", rs.Primary.ID)
+		return nil
 	}
 
 	return nil

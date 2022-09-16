@@ -7,31 +7,13 @@
 package es
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pkg/errors"
+	olivere "github.com/olivere/elastic/v7"
 	log "github.com/sirupsen/logrus"
 )
-
-// User Json object returned by API
-type User map[string]*UserSpec
-
-// UserSpec is the user object
-type UserSpec struct {
-	Enabled      bool        `json:"enabled"`
-	Email        string      `json:"email"`
-	FullName     string      `json:"full_name"`
-	Password     string      `json:"password,omitempty"`
-	PasswordHash string      `json:"password_hash,omitempty"`
-	Roles        []string    `json:"roles"`
-	Metadata     interface{} `json:"metadata,omitempty"`
-}
 
 // resourceElasticsearchSecurityUser handle the user API call
 func resourceElasticsearchSecurityUser() *schema.Resource {
@@ -42,7 +24,7 @@ func resourceElasticsearchSecurityUser() *schema.Resource {
 		Delete: resourceElasticsearchSecurityUserDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -89,10 +71,10 @@ func resourceElasticsearchSecurityUser() *schema.Resource {
 }
 
 // resourceElasticsearchSecurityUserCreate create new user in Elasticsearch
-func resourceElasticsearchSecurityUserCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchSecurityUserCreate(d *schema.ResourceData, meta interface{}) (err error) {
 	username := d.Get("username").(string)
 
-	err := createUser(d, meta, false)
+	err = createUser(d, meta)
 	if err != nil {
 		return err
 	}
@@ -104,57 +86,48 @@ func resourceElasticsearchSecurityUserCreate(d *schema.ResourceData, meta interf
 }
 
 // resourceElasticsearchSecurityUserRead read existing user in Elasticsearch
-func resourceElasticsearchSecurityUserRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchSecurityUserRead(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
 	log.Debugf("User id:  %s", id)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Security.GetUser(
-		client.API.Security.GetUser.WithContext(context.Background()),
-		client.API.Security.GetUser.WithPretty(),
-		client.API.Security.GetUser.WithUsername(id),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+
+	user, err := client.UserGet(id)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] User %s not found - removing from state", id)
-			log.Warnf("User %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when get user %s: %s", id, res.String())
-
+	if user == nil {
+		fmt.Printf("[WARN] User %s not found - removing from state", id)
+		log.Warnf("User %s not found - removing from state", id)
+		d.SetId("")
+		return nil
 	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
+
+	if err = d.Set("username", id); err != nil {
+		return err
+	}
+	if err = d.Set("enabled", user.Enabled); err != nil {
+		return err
+	}
+	if err = d.Set("email", user.Email); err != nil {
+		return err
+	}
+	if err = d.Set("full_name", user.Fullname); err != nil {
+		return err
+	}
+	if err = d.Set("roles", user.Roles); err != nil {
 		return err
 	}
 
-	log.Debugf("Get user %s successfully:\n%s", id, string(b))
-	user := make(User)
-	err = json.Unmarshal(b, &user)
+	flattenMetadata, err := convertInterfaceToJsonString(user.Metadata)
 	if err != nil {
 		return err
 	}
-
-	log.Debugf("User %+v", user)
-
-	d.Set("username", id)
-	d.Set("enabled", user[id].Enabled)
-	d.Set("email", user[id].Email)
-	d.Set("full_name", user[id].FullName)
-	d.Set("roles", user[id].Roles)
-
-	flattenMetadata, err := convertInterfaceToJsonString(user[id].Metadata)
-	if err != nil {
+	if err = d.Set("metadata", flattenMetadata); err != nil {
 		return err
 	}
-	d.Set("metadata", flattenMetadata)
 
 	log.Infof("Read user %s successfully", id)
 
@@ -162,89 +135,51 @@ func resourceElasticsearchSecurityUserRead(d *schema.ResourceData, meta interfac
 }
 
 // resourceElasticsearchSecurityUserUpdate update existing user in Elasticsearch
-func resourceElasticsearchSecurityUserUpdate(d *schema.ResourceData, meta interface{}) error {
-
+func resourceElasticsearchSecurityUserUpdate(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
+	enabled := d.Get("enabled").(bool)
+	email := d.Get("email").(string)
+	fullName := d.Get("full_name").(string)
+	password := d.Get("password").(string)
+	passwordHash := d.Get("password_hash").(string)
+	roles := convertArrayInterfaceToArrayString(d.Get("roles").(*schema.Set).List())
+	metadata := optionalInterfaceJSON(d.Get("metadata").(string))
 
-	// Use change password API if needed
-	if d.HasChange("password") || d.HasChange("password_hash") {
+	client := meta.(eshandler.ElasticsearchHandler)
 
-		payload := make(map[string]string)
-		if d.HasChange("password") {
-			payload["password"] = d.Get("password").(string)
-		} else {
-			payload["password_hash"] = d.Get("password_hash").(string)
-		}
-
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-
-		client := meta.(*elastic.Client)
-		res, err := client.API.Security.ChangePassword(
-			bytes.NewReader(data),
-			client.API.Security.ChangePassword.WithUsername(id),
-			client.API.Security.ChangePassword.WithContext(context.Background()),
-			client.API.Security.ChangePassword.WithPretty(),
-		)
-
-		if err != nil {
-			return err
-		}
-
-		defer res.Body.Close()
-
-		if res.IsError() {
-			return errors.Errorf("Error when change password for user %s: %s", id, res.String())
-		}
-
-		log.Infof("Updated user password %s successfully", d.Id())
-
+	data := &olivere.XPackSecurityPutUserRequest{
+		Enabled:  enabled,
+		Email:    email,
+		FullName: fullName,
+		Roles:    roles,
+	}
+	if metadata != nil {
+		data.Metadata = metadata.(map[string]interface{})
 	}
 
-	// Use user API for other fiedls
-	if d.HasChange("enabled") || d.HasChange("email") || d.HasChange("full_name") || d.HasChange("roles") || d.HasChange("metadata") {
-		err := createUser(d, meta, true)
-		if err != nil {
-			return err
-		}
+	// Provide password only if it change
+	if d.HasChange("password") || d.HasChange("password_hash") {
+		data.Password = password
+		data.PasswordHash = passwordHash
+	}
 
-		log.Infof("Updated user %s successfully", d.Id())
-
+	if err = client.UserUpdate(id, data); err != nil {
+		return err
 	}
 
 	return resourceElasticsearchSecurityUserRead(d, meta)
 }
 
 // resourceElasticsearchSecurityUserDelete delete existing user in Elasticsearch
-func resourceElasticsearchSecurityUserDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchSecurityUserDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 	log.Debugf("User id: %s", id)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Security.DeleteUser(
-		id,
-		client.API.Security.DeleteUser.WithContext(context.Background()),
-		client.API.Security.DeleteUser.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	if err != nil {
+	if err = client.UserDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] User %s not found - removing from state", id)
-			log.Warnf("User %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-
-		}
-		return errors.Errorf("Error when delete user %s: %s", id, res.String())
 	}
 
 	d.SetId("")
@@ -254,14 +189,8 @@ func resourceElasticsearchSecurityUserDelete(d *schema.ResourceData, meta interf
 
 }
 
-// Print user object as Json string
-func (r *UserSpec) String() string {
-	json, _ := json.Marshal(r)
-	return string(json)
-}
-
 // createUser create or update user in Elasticsearch
-func createUser(d *schema.ResourceData, meta interface{}, isUpdate bool) error {
+func createUser(d *schema.ResourceData, meta interface{}) (err error) {
 	username := d.Get("username").(string)
 	enabled := d.Get("enabled").(bool)
 	email := d.Get("email").(string)
@@ -271,43 +200,22 @@ func createUser(d *schema.ResourceData, meta interface{}, isUpdate bool) error {
 	roles := convertArrayInterfaceToArrayString(d.Get("roles").(*schema.Set).List())
 	metadata := optionalInterfaceJSON(d.Get("metadata").(string))
 
-	user := &UserSpec{
-		Enabled:  enabled,
-		Email:    email,
-		FullName: fullName,
-		Roles:    roles,
-		Metadata: metadata,
+	client := meta.(eshandler.ElasticsearchHandler)
+
+	data := &olivere.XPackSecurityPutUserRequest{
+		Enabled:      enabled,
+		Email:        email,
+		FullName:     fullName,
+		Roles:        roles,
+		Password:     password,
+		PasswordHash: passwordHash,
+	}
+	if metadata != nil {
+		data.Metadata = metadata.(map[string]interface{})
 	}
 
-	if isUpdate == false {
-		user.Password = password
-		user.PasswordHash = passwordHash
-	}
-
-	log.Debug("Username: ", username)
-	log.Debug("User: ", user)
-
-	data, err := json.Marshal(user)
-	if err != nil {
+	if err = client.UserCreate(username, data); err != nil {
 		return err
-	}
-
-	client := meta.(*elastic.Client)
-	res, err := client.API.Security.PutUser(
-		username,
-		bytes.NewReader(data),
-		client.API.Security.PutUser.WithContext(context.Background()),
-		client.API.Security.PutUser.WithPretty(),
-	)
-
-	if err != nil {
-		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add user %s: %s", username, res.String())
 	}
 
 	return nil

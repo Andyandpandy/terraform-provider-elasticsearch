@@ -6,16 +6,13 @@
 package es
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	olivere "github.com/olivere/elastic/v7"
-	"io/ioutil"
-	"strings"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
+	olivere "github.com/olivere/elastic/v7"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,7 +25,7 @@ func resourceElasticsearchIngestPipeline() *schema.Resource {
 		Delete: resourceElasticsearchIngestPipelineDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -47,9 +44,9 @@ func resourceElasticsearchIngestPipeline() *schema.Resource {
 }
 
 // resourceElasticsearchIngestPipelineCreate create ingest pipeline
-func resourceElasticsearchIngestPipelineCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIngestPipelineCreate(d *schema.ResourceData, meta interface{}) (err error) {
 
-	err := createIngestPipeline(d, meta)
+	err = createIngestPipeline(d, meta)
 	if err != nil {
 		return err
 	}
@@ -58,8 +55,8 @@ func resourceElasticsearchIngestPipelineCreate(d *schema.ResourceData, meta inte
 }
 
 // resourceElasticsearchIngestPipelineUpdate update ingest pipeline
-func resourceElasticsearchIngestPipelineUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createIngestPipeline(d, meta)
+func resourceElasticsearchIngestPipelineUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createIngestPipeline(d, meta)
 	if err != nil {
 		return err
 	}
@@ -67,83 +64,45 @@ func resourceElasticsearchIngestPipelineUpdate(d *schema.ResourceData, meta inte
 }
 
 // resourceElasticsearchIngestPipelineRead read ingest pipeline
-func resourceElasticsearchIngestPipelineRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIngestPipelineRead(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Ingest.GetPipeline(
-		client.API.Ingest.GetPipeline.WithPipelineID(id),
-		client.API.Ingest.GetPipeline.WithContext(context.Background()),
-		client.API.Ingest.GetPipeline.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+	pipeline, err := client.IngestPipelineGet(id)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Ingest pipeline %s not found - removing from state", id)
-			log.Warnf("Ingest pipeline %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when get ingest pipeline %s: %s", id, res.String())
 
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return err
-	}
-	ingestPipeline := olivere.IngestGetPipelineResponse{}
-	if err := json.Unmarshal(b, &ingestPipeline); err != nil {
-		return err
-	}
-
-	if _, ok := ingestPipeline[id]; !ok {
+	if pipeline == nil {
 		fmt.Printf("[WARN] Ingest pipeline %s not found - removing from state", id)
 		log.Warnf("Ingest pipeline %s not found - removing from state", id)
 		d.SetId("")
 		return nil
 	}
 
-	ingestPipelineJSON, err := json.Marshal(ingestPipeline[id])
+	pipelineJSON, err := json.Marshal(pipeline)
 	if err != nil {
 		return err
 	}
 
-	log.Debugf("Get ingest pipeline %s successfully:%+v", id, ingestPipelineJSON)
-	d.Set("name", d.Id())
-	d.Set("pipeline", string(ingestPipelineJSON))
+	log.Debugf("Get ingest pipeline %s successfully:%+v", id, string(pipelineJSON))
+	if err = d.Set("name", d.Id()); err != nil {
+		return err
+	}
+	if err = d.Set("pipeline", string(pipelineJSON)); err != nil {
+		return err
+	}
 	return nil
 }
 
 // resourceElasticsearchIngestPipelineDelete delete ingest pipeline
-func resourceElasticsearchIngestPipelineDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIngestPipelineDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Ingest.DeletePipeline(
-		id,
-		client.API.Ingest.DeletePipeline.WithContext(context.Background()),
-		client.API.Ingest.DeletePipeline.WithPretty(),
-	)
-
-	if err != nil {
+	client := meta.(eshandler.ElasticsearchHandler)
+	if err = client.IngestPipelineDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Ingest pipeline %s not found - removing from state", id)
-			log.Warnf("Ingest pipeline %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when delete ingest pipeline %s: %s", id, res.String())
-
 	}
 
 	d.SetId("")
@@ -151,26 +110,18 @@ func resourceElasticsearchIngestPipelineDelete(d *schema.ResourceData, meta inte
 }
 
 // createIngestPipeline create or update ingest pipeline
-func createIngestPipeline(d *schema.ResourceData, meta interface{}) error {
+func createIngestPipeline(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 	pipeline := d.Get("pipeline").(string)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Ingest.PutPipeline(
-		name,
-		strings.NewReader(pipeline),
-		client.API.Ingest.PutPipeline.WithContext(context.Background()),
-		client.API.Ingest.PutPipeline.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	if err != nil {
+	data := &olivere.IngestGetPipeline{}
+	if err = json.Unmarshal([]byte(pipeline), data); err != nil {
 		return err
 	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add ingest pipeline %s: %s", name, res.String())
+	if err = client.IngestPipelineUpdate(name, data); err != nil {
+		return err
 	}
 
 	return nil

@@ -1,9 +1,11 @@
 package es
 
 import (
+	"context"
 	"os"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/sirupsen/logrus"
 	easy "github.com/t-tomalak/logrus-easy-formatter"
@@ -22,9 +24,9 @@ func init() {
 
 	// Init provider
 	testAccProvider = Provider()
-	configureFunc := testAccProvider.ConfigureFunc
-	testAccProvider.ConfigureFunc = func(d *schema.ResourceData) (interface{}, error) {
-		return configureFunc(d)
+	configureFunc := testAccProvider.ConfigureContextFunc
+	testAccProvider.ConfigureContextFunc = func(ctx context.Context, rd *schema.ResourceData) (interface{}, diag.Diagnostics) {
+		return configureFunc(ctx, rd)
 	}
 	testAccProviders = map[string]*schema.Provider{
 		"elasticsearch": testAccProvider,

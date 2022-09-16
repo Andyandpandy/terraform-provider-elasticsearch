@@ -6,16 +6,12 @@
 package es
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"strings"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	oelastic "github.com/olivere/elastic/v7"
-	"github.com/pkg/errors"
+	olivere "github.com/olivere/elastic/v7"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,7 +24,7 @@ func resourceElasticsearchIndexComponentTemplate() *schema.Resource {
 		Delete: resourceElasticsearchIndexComponentTemplateDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -38,18 +34,46 @@ func resourceElasticsearchIndexComponentTemplate() *schema.Resource {
 				Required: true,
 			},
 			"template": {
-				Type:             schema.TypeString,
-				Required:         true,
-				DiffSuppressFunc: suppressEquivalentJSON,
+				Type:     schema.TypeString,
+				Required: true,
+				DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+					var err error
+
+					if oldValue == "" {
+						oldValue = "{}"
+					}
+					if newValue == "" {
+						newValue = "{}"
+					}
+
+					oldComponentTemplate := &olivere.IndicesGetComponentTemplate{}
+					if err = json.Unmarshal([]byte(oldValue), oldComponentTemplate); err != nil {
+						fmt.Printf("[ERR] Error when converting old component template: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting old component template: %s\ndata: %s", err.Error(), oldValue)
+					}
+					newComponentTemplate := &olivere.IndicesGetComponentTemplate{}
+					if err = json.Unmarshal([]byte(newValue), newComponentTemplate); err != nil {
+						fmt.Printf("[ERR] Error when converting new component template: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting new component template: %s\ndata: %s", err.Error(), oldValue)
+					}
+
+					diff, err := esHandler.ComponentTemplateDiff(oldComponentTemplate, newComponentTemplate)
+					if err != nil {
+						fmt.Printf("[ERR] Error when diff component template: %s", err.Error())
+						log.Errorf("Error when diff component template: %s", err.Error())
+					}
+
+					return diff == ""
+				},
 			},
 		},
 	}
 }
 
 // resourceElasticsearchIndexComponentTemplateCreate create index component template
-func resourceElasticsearchIndexComponentTemplateCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexComponentTemplateCreate(d *schema.ResourceData, meta interface{}) (err error) {
 
-	err := createIndexComponentTemplate(d, meta)
+	err = createIndexComponentTemplate(d, meta)
 	if err != nil {
 		return err
 	}
@@ -58,8 +82,8 @@ func resourceElasticsearchIndexComponentTemplateCreate(d *schema.ResourceData, m
 }
 
 // resourceElasticsearchIndexComponentTemplateUpdate update index component template
-func resourceElasticsearchIndexComponentTemplateUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createIndexComponentTemplate(d, meta)
+func resourceElasticsearchIndexComponentTemplateUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createIndexComponentTemplate(d, meta)
 	if err != nil {
 		return err
 	}
@@ -67,83 +91,43 @@ func resourceElasticsearchIndexComponentTemplateUpdate(d *schema.ResourceData, m
 }
 
 // resourceElasticsearchIndexComponentTemplateRead read index component template
-func resourceElasticsearchIndexComponentTemplateRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexComponentTemplateRead(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Cluster.GetComponentTemplate(
-		client.API.Cluster.GetComponentTemplate.WithName(id),
-		client.API.Cluster.GetComponentTemplate.WithContext(context.Background()),
-		client.API.Cluster.GetComponentTemplate.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+	ct, err := client.ComponentTemplateGet(id)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Index component template %s not found - removing from state", id)
-			log.Warnf("Index component template %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when get index component template %s: %s", id, res.String())
-
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return err
-	}
-	indexComponentTemplateResp := &oelastic.IndicesGetComponentTemplateResponse{}
-	if err := json.Unmarshal(b, indexComponentTemplateResp); err != nil {
-		return err
-	}
-
-	if len(indexComponentTemplateResp.ComponentTemplates) == 0 {
+	if ct == nil {
 		fmt.Printf("[WARN] Index component template %s not found - removing from state", id)
 		log.Warnf("Index component template %s not found - removing from state", id)
 		d.SetId("")
 		return nil
 	}
 
-	indexComponentTemplateJSON, err := json.Marshal(indexComponentTemplateResp.ComponentTemplates[0].ComponentTemplate)
+	indexComponentTemplateJSON, err := json.Marshal(ct)
 	if err != nil {
 		return err
 	}
 
 	log.Debugf("Get index component template %s successfully:%+v", id, string(indexComponentTemplateJSON))
-	d.Set("name", d.Id())
-	d.Set("template", string(indexComponentTemplateJSON))
+	if err = d.Set("name", d.Id()); err != nil {
+		return err
+	}
+	if err = d.Set("template", string(indexComponentTemplateJSON)); err != nil {
+		return err
+	}
 	return nil
 }
 
 // resourceElasticsearchIndexComponentTemplateDelete delete index template
-func resourceElasticsearchIndexComponentTemplateDelete(d *schema.ResourceData, meta interface{}) error {
-
+func resourceElasticsearchIndexComponentTemplateDelete(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Cluster.DeleteComponentTemplate(
-		id,
-		client.API.Cluster.DeleteComponentTemplate.WithContext(context.Background()),
-		client.API.Cluster.DeleteComponentTemplate.WithPretty(),
-	)
-
-	if err != nil {
+	client := meta.(eshandler.ElasticsearchHandler)
+	if err = client.ComponentTemplateDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Index component template %s not found - removing from state", id)
-			log.Warnf("Index component template %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when delete index component template %s: %s", id, res.String())
-
 	}
 
 	d.SetId("")
@@ -151,26 +135,18 @@ func resourceElasticsearchIndexComponentTemplateDelete(d *schema.ResourceData, m
 }
 
 // createIndexComponentTemplate create or update index component template
-func createIndexComponentTemplate(d *schema.ResourceData, meta interface{}) error {
+func createIndexComponentTemplate(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 	template := d.Get("template").(string)
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Cluster.PutComponentTemplate(
-		name,
-		strings.NewReader(template),
-		client.API.Cluster.PutComponentTemplate.WithContext(context.Background()),
-		client.API.Cluster.PutComponentTemplate.WithPretty(),
-	)
-
-	if err != nil {
+	data := &olivere.IndicesGetComponentTemplate{}
+	if err = json.Unmarshal([]byte(template), data); err != nil {
 		return err
 	}
 
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add index component template %s: %s", name, res.String())
+	if err = client.ComponentTemplateUpdate(name, data); err != nil {
+		return err
 	}
 
 	return nil

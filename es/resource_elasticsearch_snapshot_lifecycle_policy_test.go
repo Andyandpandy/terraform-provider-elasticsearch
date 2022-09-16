@@ -1,13 +1,10 @@
 package es
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -56,33 +53,16 @@ func testCheckElasticsearchSnapshotLifecyclePolicyExists(name string) resource.T
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.SlmGetLifecycle(
-			client.API.SlmGetLifecycle.WithContext(context.Background()),
-			client.API.SlmGetLifecycle.WithPretty(),
-			client.API.SlmGetLifecycle.WithPolicyID(rs.Primary.ID),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		policy, err := client.SLMGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get snapshot lifecycle policy %s: %s", rs.Primary.ID, res.String())
+		if policy == nil {
+			return errors.Errorf("SLM policy %s not found", rs.Primary.ID)
 		}
 
 		// Manage Bug https://github.com/elastic/elasticsearch/issues/47664
-		b, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			return err
-		}
-		snapshotLifecyclePolicy := make(SnapshotLifecyclePolicy)
-		err = json.Unmarshal(b, &snapshotLifecyclePolicy)
-		if err != nil {
-			return err
-		}
-		if len(snapshotLifecyclePolicy) == 0 {
-			return errors.Errorf("Error when get snapshot lifecycle policy %s: Policy not found", rs.Primary.ID)
-		}
 
 		return nil
 	}
@@ -93,39 +73,23 @@ func testCheckElasticsearchSnapshotLifecyclePolicyDestroy(s *terraform.State) er
 		if rs.Type != "elasticsearch_snapshot_lifecycle_policy" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.SlmGetLifecycle(
-			client.API.SlmGetLifecycle.WithContext(context.Background()),
-			client.API.SlmGetLifecycle.WithPretty(),
-			client.API.SlmGetLifecycle.WithPolicyID(rs.Primary.ID),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		policy, err := client.SLMGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-				return nil
-			}
-		}
-		// Manage Bug https://github.com/elastic/elasticsearch/issues/47664
-		b, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			return err
-		}
-		snapshotLifecyclePolicy := make(SnapshotLifecyclePolicy)
-		err = json.Unmarshal(b, &snapshotLifecyclePolicy)
-		if err != nil {
-			return err
-		}
-		if len(snapshotLifecyclePolicy) == 0 {
-			return nil
+		if policy != nil {
+			return fmt.Errorf("Snapshot lifecycle policy %q still exists", rs.Primary.ID)
 		}
 
-		return fmt.Errorf("Snapshot lifecycle policy %q still exists", rs.Primary.ID)
+		return nil
+
 	}
 
 	return nil

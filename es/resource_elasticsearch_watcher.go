@@ -7,32 +7,14 @@
 package es
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pkg/errors"
+	olivere "github.com/olivere/elastic/v7"
 	log "github.com/sirupsen/logrus"
 )
-
-// Watcher object returned by API
-type Watcher struct {
-	Watcher *WatcherSpec `json:"watch"`
-}
-
-// WatcherSpec is the watcher object
-type WatcherSpec struct {
-	Trigger        interface{} `json:"trigger,omitempty"`
-	Input          interface{} `json:"input,omitempty"`
-	Condition      interface{} `json:"condition,omitempty"`
-	Actions        interface{} `json:"actions,omitempty"`
-	Metadata       interface{} `json:"metadata,omitempty"`
-	ThrottlePeriod string      `json:"throttle_period,omitempty"`
-}
 
 // resourceElasticsearchWatcher handle the watcher API call
 func resourceElasticsearchWatcher() *schema.Resource {
@@ -43,7 +25,7 @@ func resourceElasticsearchWatcher() *schema.Resource {
 		Delete: resourceElasticsearchWatcherDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -87,10 +69,10 @@ func resourceElasticsearchWatcher() *schema.Resource {
 }
 
 // resourceElasticsearchWatcherCreate create new watcher in Elasticsearch
-func resourceElasticsearchWatcherCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchWatcherCreate(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 
-	err := createWatcher(d, meta)
+	err = createWatcher(d, meta)
 	if err != nil {
 		return err
 	}
@@ -102,82 +84,72 @@ func resourceElasticsearchWatcherCreate(d *schema.ResourceData, meta interface{}
 }
 
 // resourceElasticsearchWatcherRead read existing watch in Elasticsearch
-func resourceElasticsearchWatcherRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchWatcherRead(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
 	log.Debugf("Watcher id:  %s", id)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Watcher.GetWatch(
-		id,
-		client.API.Watcher.GetWatch.WithContext(context.Background()),
-		client.API.Watcher.GetWatch.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+	watcher, err := client.WatchGet(id)
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Watcher %s not found - removing from state", id)
-			log.Warnf("Watcher %s not found - removing from state", id)
-			d.SetId("")
-			return nil
+	if watcher == nil {
+		fmt.Printf("[WARN] Watcher %s not found - removing from state", id)
+		log.Warnf("Watcher %s not found - removing from state", id)
+		d.SetId("")
+		return nil
+	}
+
+	if err = d.Set("name", id); err != nil {
+		return err
+	}
+
+	flattenTrigger, err := convertInterfaceToJsonString(watcher.Trigger)
+	if err != nil {
+		return err
+	}
+	if err = d.Set("trigger", flattenTrigger); err != nil {
+		return err
+	}
+
+	flattenInput, err := convertInterfaceToJsonString(watcher.Input)
+	if err != nil {
+		return err
+	}
+	if err = d.Set("input", flattenInput); err != nil {
+		return err
+	}
+
+	flattenCondition, err := convertInterfaceToJsonString(watcher.Condition)
+	if err != nil {
+		return err
+	}
+	if err = d.Set("condition", flattenCondition); err != nil {
+		return err
+	}
+
+	flattenActions, err := convertInterfaceToJsonString(watcher.Actions)
+	if err != nil {
+		return err
+	}
+	if err = d.Set("actions", flattenActions); err != nil {
+		return err
+	}
+
+	flattenMetadata, err := convertInterfaceToJsonString(watcher.Metadata)
+	if err != nil {
+		return err
+	}
+	if err = d.Set("metadata", flattenMetadata); err != nil {
+		return err
+	}
+
+	if watcher.ThrottlePeriod != "" {
+		if err = d.Set("throttle_period", watcher.ThrottlePeriod); err != nil {
+			return err
 		}
-		return errors.Errorf("Error when get watcher %s: %s", id, res.String())
-
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return err
-	}
-
-	log.Debugf("Get watcher %s successfully:\n%s", id, string(b))
-	watcher := &Watcher{}
-	err = json.Unmarshal(b, watcher)
-	if err != nil {
-		return err
-	}
-
-	watcherSpec := watcher.Watcher
-
-	log.Debugf("Watcher %+v", watcherSpec)
-
-	d.Set("name", id)
-
-	flattenTrigger, err := convertInterfaceToJsonString(watcherSpec.Trigger)
-	if err != nil {
-		return err
-	}
-	d.Set("trigger", flattenTrigger)
-
-	flattenInput, err := convertInterfaceToJsonString(watcherSpec.Input)
-	if err != nil {
-		return err
-	}
-	d.Set("input", flattenInput)
-
-	flattenCondition, err := convertInterfaceToJsonString(watcherSpec.Condition)
-	if err != nil {
-		return err
-	}
-	d.Set("condition", flattenCondition)
-
-	flattenActions, err := convertInterfaceToJsonString(watcherSpec.Actions)
-	if err != nil {
-		return err
-	}
-	d.Set("actions", flattenActions)
-
-	flattenMetadata, err := convertInterfaceToJsonString(watcherSpec.Metadata)
-	if err != nil {
-		return err
-	}
-	d.Set("metadata", flattenMetadata)
-
-	if watcherSpec.ThrottlePeriod != "" {
-		d.Set("throttle_period", watcherSpec.ThrottlePeriod)
 	}
 
 	log.Infof("Read watcher %s successfully", id)
@@ -186,8 +158,8 @@ func resourceElasticsearchWatcherRead(d *schema.ResourceData, meta interface{}) 
 }
 
 // resourceElasticsearchWatcherUpdate update existing watcher in Elasticsearch
-func resourceElasticsearchWatcherUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createWatcher(d, meta)
+func resourceElasticsearchWatcherUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createWatcher(d, meta)
 	if err != nil {
 		return err
 	}
@@ -198,33 +170,15 @@ func resourceElasticsearchWatcherUpdate(d *schema.ResourceData, meta interface{}
 }
 
 // resourceElasticsearchWatcherDelete delete existing watcher in Elasticsearch
-func resourceElasticsearchWatcherDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchWatcherDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 	log.Debugf("Watcher id: %s", id)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Watcher.DeleteWatch(
-		id,
-		client.API.Watcher.DeleteWatch.WithContext(context.Background()),
-		client.API.Watcher.DeleteWatch.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	if err != nil {
+	if err = client.WatchDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Watcher %s not found - removing from state", id)
-			log.Warnf("Watcher %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-
-		}
-		return errors.Errorf("Error when delete watcher %s: %s", id, res.String())
 	}
 
 	d.SetId("")
@@ -234,54 +188,48 @@ func resourceElasticsearchWatcherDelete(d *schema.ResourceData, meta interface{}
 
 }
 
-// Print Watcher object as Json string
-func (r *WatcherSpec) String() string {
-	json, _ := json.Marshal(r)
-	return string(json)
-}
-
 // createWatcher create or update watcher in Elasticsearch
-func createWatcher(d *schema.ResourceData, meta interface{}) error {
+func createWatcher(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
-	trigger := optionalInterfaceJSON(d.Get("trigger").(string))
-	input := optionalInterfaceJSON(d.Get("input").(string))
-	condition := optionalInterfaceJSON(d.Get("condition").(string))
-	actions := optionalInterfaceJSON(d.Get("actions").(string))
+	triggerStr := d.Get("trigger").(string)
+	inputStr := d.Get("input").(string)
+	conditionStr := d.Get("condition").(string)
+	actionStr := d.Get("actions").(string)
 	metadata := optionalInterfaceJSON(d.Get("metadata").(string))
 	throttlePeriod := d.Get("throttle_period").(string)
 
-	watcher := &WatcherSpec{
-		Trigger:        trigger,
-		Input:          input,
-		Condition:      condition,
-		Actions:        actions,
-		Metadata:       metadata,
+	trigger := new(map[string]map[string]interface{})
+	if err = json.Unmarshal([]byte(triggerStr), trigger); err != nil {
+		return err
+	}
+	input := new(map[string]map[string]interface{})
+	if err = json.Unmarshal([]byte(inputStr), input); err != nil {
+		return err
+	}
+	condition := new(map[string]map[string]interface{})
+	if err = json.Unmarshal([]byte(conditionStr), condition); err != nil {
+		return err
+	}
+	action := new(map[string]map[string]interface{})
+	if err = json.Unmarshal([]byte(actionStr), action); err != nil {
+		return err
+	}
+
+	client := meta.(eshandler.ElasticsearchHandler)
+
+	data := &olivere.XPackWatch{
+		Trigger:        *trigger,
+		Input:          *input,
+		Condition:      *condition,
+		Actions:        *action,
 		ThrottlePeriod: throttlePeriod,
 	}
-	log.Debug("Name: ", name)
-	log.Debug("Watcher: ", watcher)
-
-	data, err := json.Marshal(watcher)
-	if err != nil {
-		return err
+	if metadata != nil {
+		data.Metadata = metadata.(map[string]interface{})
 	}
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Watcher.PutWatch(
-		name,
-		client.API.Watcher.PutWatch.WithBody(bytes.NewReader(data)),
-		client.API.Watcher.PutWatch.WithContext(context.Background()),
-		client.API.Watcher.PutWatch.WithPretty(),
-	)
-
-	if err != nil {
+	if err = client.WatchUpdate(name, data); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add watcher %s: %s", name, res.String())
 	}
 
 	return nil

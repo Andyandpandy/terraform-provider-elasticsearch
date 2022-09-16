@@ -6,7 +6,6 @@ Read the doc to use it: https://github.com/disaster37/terraform-provider-elastic
 package main
 
 import (
-	"context"
 	"flag"
 	"os"
 
@@ -33,16 +32,9 @@ func main() {
 	flag.BoolVar(&debugMode, "debug", false, "set to true to run the provider with support for debuggers like delve")
 	flag.Parse()
 
-	opts := &plugin.ServeOpts{ProviderFunc: es.Provider}
-
-	if debugMode {
-		err := plugin.Debug(context.Background(), "registry.terraform.io/disaster37/elasticsearch", opts)
-
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-
-		return
+	opts := &plugin.ServeOpts{
+		ProviderFunc: es.Provider,
+		Debug:        debugMode,
 	}
 
 	plugin.Serve(opts)

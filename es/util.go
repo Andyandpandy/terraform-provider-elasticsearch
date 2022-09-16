@@ -24,13 +24,19 @@ func convertArrayInterfaceToArrayString(raws []interface{}) []string {
 	return data
 }
 
-func convertMapInterfaceToMapString(raws map[string]interface{}) map[string]string {
-	data := make(map[string]string)
-	for k, v := range raws {
-		data[k] = v.(string)
+func convertRawJsonTopMapString(raw string) (map[string]any, error) {
+	result := map[string]any{}
+	var err error
+
+	if raw == "" {
+		return result, nil
 	}
 
-	return data
+	if err = json.Unmarshal([]byte(raw), &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func convertInterfaceToJsonString(object interface{}) (string, error) {

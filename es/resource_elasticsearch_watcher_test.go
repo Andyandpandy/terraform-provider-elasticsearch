@@ -1,11 +1,10 @@
 package es
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/pkg/errors"
@@ -53,18 +52,13 @@ func testCheckElasticsearchWatcherExists(name string) resource.TestCheckFunc {
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Watcher.GetWatch(
-			rs.Primary.ID,
-			client.API.Watcher.GetWatch.WithContext(context.Background()),
-			client.API.Watcher.GetWatch.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		watcher, err := client.WatchGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get watcher %s: %s", rs.Primary.ID, res.String())
+		if watcher == nil {
+			return errors.Errorf("Watcher %s not found", rs.Primary.ID)
 		}
 
 		return nil
@@ -76,26 +70,23 @@ func testCheckElasticsearchWatcherDestroy(s *terraform.State) error {
 		if rs.Type != "elasticsearch_watcher" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Watcher.GetWatch(
-			rs.Primary.ID,
-			client.API.Watcher.GetWatch.WithContext(context.Background()),
-			client.API.Watcher.GetWatch.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		watcher, err := client.WatchGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-				return nil
-			}
+		if watcher != nil {
+			return fmt.Errorf("Watcher %q still exists", rs.Primary.ID)
 		}
 
-		return fmt.Errorf("Watcher %q still exists", rs.Primary.ID)
+		return nil
+
 	}
 
 	return nil

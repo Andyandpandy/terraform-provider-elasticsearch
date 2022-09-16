@@ -1,11 +1,10 @@
 package es
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/pkg/errors"
@@ -54,18 +53,13 @@ func testCheckElasticsearchSecurityUserExists(name string) resource.TestCheckFun
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Security.GetUser(
-			client.API.Security.GetUser.WithContext(context.Background()),
-			client.API.Security.GetUser.WithPretty(),
-			client.API.Security.GetUser.WithUsername(rs.Primary.ID),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		user, err := client.UserGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get user %s: %s", rs.Primary.ID, res.String())
+		if user == nil {
+			return errors.Errorf("User %s not found", rs.Primary.ID)
 		}
 
 		return nil
@@ -77,26 +71,22 @@ func testCheckElasticsearchSecurityUserDestroy(s *terraform.State) error {
 		if rs.Type != "elasticsearch_user" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Security.GetUser(
-			client.API.Security.GetUser.WithContext(context.Background()),
-			client.API.Security.GetUser.WithPretty(),
-			client.API.Security.GetUser.WithUsername(rs.Primary.ID),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		user, err := client.UserGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-				return nil
-			}
+		if user != nil {
+			return fmt.Errorf("User %q still exists", rs.Primary.ID)
 		}
 
-		return fmt.Errorf("User %q still exists", rs.Primary.ID)
+		return nil
 	}
 
 	return nil

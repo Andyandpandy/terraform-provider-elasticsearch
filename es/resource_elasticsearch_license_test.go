@@ -1,11 +1,10 @@
 package es
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/pkg/errors"
@@ -47,17 +46,13 @@ func testCheckElasticsearchLicenseExists(name string) resource.TestCheckFunc {
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.License.Get(
-			client.API.License.Get.WithContext(context.Background()),
-			client.API.License.Get.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		license, err := client.LicenseGet()
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get license: %s", res.String())
+		if license == nil {
+			return errors.New("License not found")
 		}
 
 		return nil
@@ -69,28 +64,26 @@ func testCheckElasticsearchLicenseDestroy(s *terraform.State) error {
 		if rs.Type != "elasticsearch_license" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.License.Get(
-			client.API.License.Get.WithContext(context.Background()),
-			client.API.License.Get.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		//license, err := client.LicenseGet()
+		_, err := client.LicenseGet()
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-
-				return nil
+		/*
+			if license != nil {
+				// The basic license continue to exist
+				return errors.New("License still exist")
 			}
-		}
+		*/
 
-        // The basic license continue to exist
-		//return fmt.Errorf("License still exists")
-        return nil
+		return nil
 	}
 
 	return nil

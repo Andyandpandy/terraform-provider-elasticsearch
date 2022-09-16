@@ -1,11 +1,10 @@
 package es
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
 	"github.com/pkg/errors"
@@ -53,18 +52,13 @@ func testCheckElasticsearchSecurityRoleExists(name string) resource.TestCheckFun
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Security.GetRole(
-			client.API.Security.GetRole.WithContext(context.Background()),
-			client.API.Security.GetRole.WithPretty(),
-			client.API.Security.GetRole.WithName(rs.Primary.ID),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		role, err := client.RoleGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get security role %s: %s", rs.Primary.ID, res.String())
+		if role == nil {
+			return errors.Errorf("Role %s not found", rs.Primary.ID)
 		}
 
 		return nil
@@ -76,26 +70,23 @@ func testCheckElasticsearchSecurityRoleDestroy(s *terraform.State) error {
 		if rs.Type != "elasticsearch_role" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Security.GetRole(
-			client.API.Security.GetRole.WithContext(context.Background()),
-			client.API.Security.GetRole.WithPretty(),
-			client.API.Security.GetRole.WithName(rs.Primary.ID),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		role, err := client.RoleGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-				return nil
-			}
+		if role != nil {
+			return fmt.Errorf("Security role %q still exists", rs.Primary.ID)
 		}
 
-		return fmt.Errorf("Security role %q still exists", rs.Primary.ID)
+		return nil
+
 	}
 
 	return nil

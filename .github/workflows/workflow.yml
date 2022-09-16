@@ -22,17 +22,24 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v2
         with:
-          go-version: "1.17"
+          go-version: "1.18"
       - name: Setup Elasticsearch
         run: |
           set -e
           docker-compose up &
           until $(curl --output /dev/null --silent --head --fail -u elastic:changeme http://localhost:9200); do sleep 5; done
           curl -XPOST -u elastic:changeme http://localhost:9200/_license/start_trial?acknowledge=true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          args: --timeout 600s
       - name: Run build
         run: make build
       - name: Run acceptance tests
-        run: ELASTICSEARCH_URLS="http://localhost:9200" ELASTICSEARCH_USERNAME="elastic" ELASTICSEARCH_PASSWORD="changeme" make testacc
+        run: |
+          mv es/resource_elasticsearch_license_test.go es/resource_elasticsearch_license_test.go.disable
+          ELASTICSEARCH_URLS="http://localhost:9200" ELASTICSEARCH_USERNAME="elastic" ELASTICSEARCH_PASSWORD="changeme" make testacc
       - name: Run acceptance test on license resource
         run: |
           set -e
@@ -58,7 +65,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: 1.17
+          go-version: 1.18
       - name: Import GPG key
         id: import_gpg
         uses: paultyng/ghaction-import-gpg@v2.1.0

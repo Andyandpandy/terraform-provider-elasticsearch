@@ -5,6 +5,7 @@ You can see the API documentation: https://www.elastic.co/guide/en/elasticsearch
 
 ***Supported Elasticsearch version:***
   - v7
+  - v8
 
 ## Example Usage
 

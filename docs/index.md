@@ -51,3 +51,6 @@ provider "elasticsearch" {
 - [elasticsearch_snapshot_repository](resources/elasticsearch_snapshot_repository.md)
 - [elasticsearch_snapshot_lifecycle_policy](resources/elasticsearch_snapshot_lifecycle_policy.md)
 - [elasticsearch_watcher](resources/elasticsearch_watcher.md)
+- [elasticsearch_data_stream](resources/elasticsearch_data_stream.md)
+- [elasticsearch_ingest_pipeline](resources/elasticsearch_ingest_pipeline.md)
+- [elasticsearch_transform](resources/elasticsearch_transform.md)

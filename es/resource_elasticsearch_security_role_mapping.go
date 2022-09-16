@@ -7,28 +7,13 @@
 package es
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pkg/errors"
+	olivere "github.com/olivere/elastic/v7"
 	log "github.com/sirupsen/logrus"
 )
-
-// RoleMapping is role mapping object returned by API
-type RoleMapping map[string]*RoleMappingSpec
-
-// RoleMappingSpec is role mapping object
-type RoleMappingSpec struct {
-	Roles    []string    `json:"roles"`
-	Enabled  bool        `json:"enabled"`
-	Rules    interface{} `json:"rules,omitempty"`
-	Metadata interface{} `json:"metadata,omitempty"`
-}
 
 // resourceElasticsearchSecurityRoleMapping handle role mapping API call
 func resourceElasticsearchSecurityRoleMapping() *schema.Resource {
@@ -39,7 +24,7 @@ func resourceElasticsearchSecurityRoleMapping() *schema.Resource {
 		Delete: resourceElasticsearchSecurityRoleMappingDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -75,10 +60,10 @@ func resourceElasticsearchSecurityRoleMapping() *schema.Resource {
 }
 
 // resourceElasticsearchSecurityRoleMappingCreate  create new role mapping in Elasticsearch
-func resourceElasticsearchSecurityRoleMappingCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchSecurityRoleMappingCreate(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 
-	err := createRoleMapping(d, meta)
+	err = createRoleMapping(d, meta)
 	if err != nil {
 		return err
 	}
@@ -89,67 +74,56 @@ func resourceElasticsearchSecurityRoleMappingCreate(d *schema.ResourceData, meta
 }
 
 // resourceElasticsearchSecurityRoleMappingRead read existing role mapping in Elasticsearch
-func resourceElasticsearchSecurityRoleMappingRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchSecurityRoleMappingRead(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
 	log.Debugf("Role mapping id:  %s", id)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Security.GetRoleMapping(
-		client.API.Security.GetRoleMapping.WithContext(context.Background()),
-		client.API.Security.GetRoleMapping.WithPretty(),
-		client.API.Security.GetRoleMapping.WithName(id),
-	)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Role mapping %s not found. Removing from state\n", id)
-			log.Warnf("Role mapping %s not found. Removing from state\n", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when get role mapping %s: %s", id, res.String())
+	client := meta.(eshandler.ElasticsearchHandler)
 
-	}
-	b, err := ioutil.ReadAll(res.Body)
+	rm, err := client.RoleMappingGet(id)
 	if err != nil {
 		return err
+	}
+	if rm == nil {
+		fmt.Printf("[WARN] Role mapping %s not found. Removing from state\n", id)
+		log.Warnf("Role mapping %s not found. Removing from state\n", id)
+		d.SetId("")
+		return nil
 	}
 
-	log.Debugf("Get role mapping %s successfully:\n%s", id, string(b))
-	roleMapping := make(RoleMapping)
-	err = json.Unmarshal(b, &roleMapping)
+	if err = d.Set("name", id); err != nil {
+		return err
+	}
+	if err = d.Set("enabled", rm.Enabled); err != nil {
+		return err
+	}
+	if err = d.Set("roles", rm.Roles); err != nil {
+		return err
+	}
+	flattenRules, err := convertInterfaceToJsonString(rm.Rules)
 	if err != nil {
 		return err
 	}
-
-	log.Debugf("Role mapping %+v", roleMapping)
-
-	d.Set("name", id)
-	d.Set("enabled", roleMapping[id].Enabled)
-	d.Set("roles", roleMapping[id].Roles)
-	flattenRules, err := convertInterfaceToJsonString(roleMapping[id].Rules)
+	if err = d.Set("rules", flattenRules); err != nil {
+		return err
+	}
+	flattenMetadata, err := convertInterfaceToJsonString(rm.Metadata)
 	if err != nil {
 		return err
 	}
-	d.Set("rules", flattenRules)
-	flattenMetadata, err := convertInterfaceToJsonString(roleMapping[id].Metadata)
-	if err != nil {
+	if err = d.Set("metadata", flattenMetadata); err != nil {
 		return err
 	}
-	d.Set("metadata", flattenMetadata)
 
 	log.Infof("Read role mapping %s successfully", id)
 	return nil
 }
 
 // resourceElasticsearchSecurityRoleMappingUpdate update existing role mapping in Elasticsearch
-func resourceElasticsearchSecurityRoleMappingUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createRoleMapping(d, meta)
+func resourceElasticsearchSecurityRoleMappingUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createRoleMapping(d, meta)
 	if err != nil {
 		return err
 	}
@@ -160,33 +134,14 @@ func resourceElasticsearchSecurityRoleMappingUpdate(d *schema.ResourceData, meta
 }
 
 // resourceElasticsearchSecurityRoleMappingDelete delete existing role mapping in Elasticsearch
-func resourceElasticsearchSecurityRoleMappingDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchSecurityRoleMappingDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 	log.Debugf("Role mapping id: %s", id)
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.Security.DeleteRoleMapping(
-		id,
-		client.API.Security.DeleteRoleMapping.WithContext(context.Background()),
-		client.API.Security.DeleteRoleMapping.WithPretty(),
-	)
-
-	if err != nil {
+	client := meta.(eshandler.ElasticsearchHandler)
+	if err = client.RoleMappingDelete(id); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] Role mapping %s not found - removing from state", id)
-			log.Warnf("Role mapping %s not found - removing from state", id)
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when delete role mapping %s: %s", id, res.String())
-
 	}
 
 	d.SetId("")
@@ -197,50 +152,34 @@ func resourceElasticsearchSecurityRoleMappingDelete(d *schema.ResourceData, meta
 }
 
 // createRoleMapping create or update role mapping
-func createRoleMapping(d *schema.ResourceData, meta interface{}) error {
+func createRoleMapping(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 	enabled := d.Get("enabled").(bool)
 	roles := convertArrayInterfaceToArrayString(d.Get("roles").(*schema.Set).List())
-	rules := optionalInterfaceJSON(d.Get("rules").(string))
-	metadata := optionalInterfaceJSON(d.Get("metadata").(string))
+	rulesStr := d.Get("rules").(string)
+	metadataStr := d.Get("metadata").(string)
 
-	roleMapping := &RoleMappingSpec{
+	client := meta.(eshandler.ElasticsearchHandler)
+
+	rules, err := convertRawJsonTopMapString(rulesStr)
+	if err != nil {
+		return err
+	}
+	metadata, err := convertRawJsonTopMapString(metadataStr)
+	if err != nil {
+		return err
+	}
+
+	data := &olivere.XPackSecurityRoleMapping{
 		Enabled:  enabled,
 		Roles:    roles,
 		Rules:    rules,
 		Metadata: metadata,
 	}
-	log.Debug("Name: ", name)
-	log.Debug("RoleMapping: ", roleMapping)
 
-	data, err := json.Marshal(roleMapping)
-	if err != nil {
+	if err = client.RoleMappingUpdate(name, data); err != nil {
 		return err
-	}
-
-	client := meta.(*elastic.Client)
-	res, err := client.API.Security.PutRoleMapping(
-		name,
-		bytes.NewReader(data),
-		client.API.Security.PutRoleMapping.WithContext(context.Background()),
-		client.API.Security.PutRoleMapping.WithPretty(),
-	)
-
-	if err != nil {
-		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add role mapping %s: %s", name, res.String())
 	}
 
 	return nil
-}
-
-// Print role mapping as Json string
-func (r *RoleMappingSpec) String() string {
-	json, _ := json.Marshal(r)
-	return string(json)
 }

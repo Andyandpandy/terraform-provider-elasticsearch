@@ -7,34 +7,14 @@
 package es
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"strings"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
-	"github.com/elastic/go-elasticsearch/v8/esapi"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/pkg/errors"
+	olivere "github.com/olivere/elastic/v7"
 	log "github.com/sirupsen/logrus"
 )
-
-// License object
-type License map[string]*LicenseSpec
-
-// LicenseSpec is license object
-type LicenseSpec struct {
-	UID                string  `json:"uid"`
-	Type               string  `json:"type"`
-	IssueDateInMillis  float64 `json:"issue_date_in_millis"`
-	ExpiryDateInMillis float64 `json:"expiry_date_in_millis"`
-	MaxNodes           float64 `json:"max_nodes"`
-	IssuedTo           string  `json:"issued_to"`
-	Issuer             string  `json:"issuer"`
-	Signature          string  `json:"signature,omitempty"`
-	StartDateInMillis  float64 `json:"start_date_in_millis"`
-}
 
 // resourceElasticsearchLicense handle the license API call
 func resourceElasticsearchLicense() *schema.Resource {
@@ -45,14 +25,36 @@ func resourceElasticsearchLicense() *schema.Resource {
 		Delete: resourceElasticsearchLicenseDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
 			"license": {
-				Type:             schema.TypeString,
-				Optional:         true,
-				DiffSuppressFunc: suppressEquivalentJSON,
+				Type:     schema.TypeString,
+				Optional: true,
+				DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+					var err error
+
+					if oldValue == "" {
+						oldValue = "{}"
+					}
+					if newValue == "" {
+						newValue = "{}"
+					}
+
+					oldLicense := &olivere.XPackInfoLicense{}
+					if err = json.Unmarshal([]byte(oldValue), oldLicense); err != nil {
+						fmt.Printf("[ERR] Error when converting old license: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting old license: %s\ndata: %s", err.Error(), oldValue)
+					}
+					newLicense := &olivere.XPackInfoLicense{}
+					if err = json.Unmarshal([]byte(newValue), newLicense); err != nil {
+						fmt.Printf("[ERR] Error when converting new license: %s\ndata: %s", err.Error(), oldValue)
+						log.Errorf("Error when converting new license: %s\ndata: %s", err.Error(), oldValue)
+					}
+
+					return esHandler.LicenseDiff(oldLicense, newLicense)
+				},
 			},
 			"use_basic_license": {
 				Type:     schema.TypeBool,
@@ -68,8 +70,8 @@ func resourceElasticsearchLicense() *schema.Resource {
 }
 
 // resourceElasticsearchLicenseCreate create license or enable basic license
-func resourceElasticsearchLicenseCreate(d *schema.ResourceData, meta interface{}) error {
-	err := createLicense(d, meta)
+func resourceElasticsearchLicenseCreate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createLicense(d, meta)
 	if err != nil {
 		return err
 	}
@@ -78,8 +80,8 @@ func resourceElasticsearchLicenseCreate(d *schema.ResourceData, meta interface{}
 }
 
 // resourceElasticsearchLicense update license
-func resourceElasticsearchLicenseUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createLicense(d, meta)
+func resourceElasticsearchLicenseUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createLicense(d, meta)
 	if err != nil {
 		return err
 	}
@@ -87,79 +89,51 @@ func resourceElasticsearchLicenseUpdate(d *schema.ResourceData, meta interface{}
 }
 
 // resourceElasticsearchLicenseRead read license
-func resourceElasticsearchLicenseRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchLicenseRead(d *schema.ResourceData, meta interface{}) (err error) {
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.License.Get(
-		client.API.License.Get.WithContext(context.Background()),
-		client.API.License.Get.WithPretty(),
-	)
+	client := meta.(eshandler.ElasticsearchHandler)
+	license, err := client.LicenseGet()
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] License not found - removing from state")
-			log.Warnf("License not found - removing from state")
-			d.SetId("")
-			return nil
+
+	if license == nil {
+		fmt.Printf("[WARN] License not found - removing from state")
+		log.Warnf("License not found - removing from state")
+		d.SetId("")
+		return nil
+	}
+
+	licenseJSON, err := json.Marshal(license)
+	if err != nil {
+		return err
+	}
+
+	if license.Type == "basic" {
+		if err = d.Set("basic_license", string(licenseJSON)); err != nil {
+			return err
 		}
-		return errors.Errorf("Error when get license: %s", res.String())
-
-	}
-	b, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return err
-	}
-
-	log.Debugf("Get license successfully:\n%s", string(b))
-
-	license := make(License)
-	err = json.Unmarshal(b, &license)
-	if err != nil {
-		return err
-	}
-
-	licenseSpec := license["license"]
-
-	log.Debugf("License object: %s", licenseSpec.String())
-
-	if licenseSpec.Type == "basic" {
-		d.Set("basic_license", licenseSpec.String())
-		d.Set("use_basic_license", true)
+		if err = d.Set("use_basic_license", true); err != nil {
+			return err
+		}
 	} else {
-		d.Set("license", licenseSpec.String())
-		d.Set("use_basic_license", false)
+		if err = d.Set("license", string(licenseJSON)); err != nil {
+			return err
+		}
+		if err = d.Set("use_basic_license", false); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
 // resourceElasticsearchLicenseDelete delete license
-func resourceElasticsearchLicenseDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchLicenseDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
-	client := meta.(*elastic.Client)
-	res, err := client.API.License.Delete(
-		client.API.License.Delete.WithContext(context.Background()),
-		client.API.License.Delete.WithPretty(),
-	)
-
-	if err != nil {
+	client := meta.(eshandler.ElasticsearchHandler)
+	if err = client.LicenseDelete(); err != nil {
 		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		if res.StatusCode == 404 {
-			fmt.Printf("[WARN] License not found - removing from state")
-			log.Warnf("License not found - removing from state")
-			d.SetId("")
-			return nil
-		}
-		return errors.Errorf("Error when delete license: %s", res.String())
-
 	}
 
 	d.SetId("")
@@ -167,76 +141,21 @@ func resourceElasticsearchLicenseDelete(d *schema.ResourceData, meta interface{}
 }
 
 // createLicense add or update license
-func createLicense(d *schema.ResourceData, meta interface{}) error {
+func createLicense(d *schema.ResourceData, meta interface{}) (err error) {
 	license := d.Get("license").(string)
 	useBasicLicense := d.Get("use_basic_license").(bool)
 
-	client := meta.(*elastic.Client)
-	var err error
-	var res *esapi.Response
-	// Use enterprise lisence
-	if useBasicLicense == false {
-		log.Debug("Use enterprise license")
-		res, err = client.API.License.Post(
-			client.API.License.Post.WithContext(context.Background()),
-			client.API.License.Post.WithPretty(),
-			client.API.License.Post.WithAcknowledge(true),
-			client.API.License.Post.WithBody(strings.NewReader(license)),
-		)
+	client := meta.(eshandler.ElasticsearchHandler)
+
+	if useBasicLicense {
+		if err = client.LicenseEnableBasic(); err != nil {
+			return err
+		}
 	} else {
-		// Use basic lisence if needed (basic license not yet enabled)
-		log.Debug("Use basic license")
-		res, err = client.API.License.GetBasicStatus(
-			client.API.License.GetBasicStatus.WithContext(context.Background()),
-			client.API.License.GetBasicStatus.WithPretty(),
-		)
-		if err != nil {
+		if err = client.LicenseUpdate(license); err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when check if basic license can be enabled: %s", res.String())
-		}
-		b, err := ioutil.ReadAll(res.Body)
-		if err != nil {
-			return err
-		}
-
-		log.Debugf("Result when get basic license status: %s", string(b))
-
-		data := make(map[string]interface{})
-		err = json.Unmarshal(b, &data)
-		if err != nil {
-			return err
-		}
-
-		if data["eligible_to_start_basic"].(bool) == false {
-			log.Infof("Basic license is already enabled")
-			return nil
-		}
-		res, err = client.API.License.PostStartBasic(
-			client.API.License.PostStartBasic.WithContext(context.Background()),
-			client.API.License.PostStartBasic.WithPretty(),
-			client.API.License.PostStartBasic.WithAcknowledge(true),
-		)
-
-	}
-
-	if err != nil {
-		return err
-	}
-
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return errors.Errorf("Error when add license: %s", res.String())
 	}
 
 	return nil
-}
-
-// Print License object as Json string
-func (r *LicenseSpec) String() string {
-	json, _ := json.Marshal(r)
-	return string(json)
 }

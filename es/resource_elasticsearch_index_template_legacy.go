@@ -13,7 +13,7 @@ import (
 	"io/ioutil"
 	"strings"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	olivere "github.com/olivere/elastic/v7"
 	"github.com/pkg/errors"
@@ -29,7 +29,7 @@ func resourceElasticsearchIndexTemplateLegacy() *schema.Resource {
 		Delete: resourceElasticsearchIndexTemplateLegacyDelete,
 
 		Importer: &schema.ResourceImporter{
-			State: schema.ImportStatePassthrough,
+			StateContext: schema.ImportStatePassthroughContext,
 		},
 
 		Schema: map[string]*schema.Schema{
@@ -48,9 +48,9 @@ func resourceElasticsearchIndexTemplateLegacy() *schema.Resource {
 }
 
 // resourceElasticsearchIndexTemplateLegacyCreate create index template
-func resourceElasticsearchIndexTemplateLegacyCreate(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexTemplateLegacyCreate(d *schema.ResourceData, meta interface{}) (err error) {
 
-	err := createIndexTemplateLegacy(d, meta)
+	err = createIndexTemplateLegacy(d, meta)
 	if err != nil {
 		return err
 	}
@@ -59,8 +59,8 @@ func resourceElasticsearchIndexTemplateLegacyCreate(d *schema.ResourceData, meta
 }
 
 // resourceElasticsearchIndexTemplateLegacyUpdate update index template
-func resourceElasticsearchIndexTemplateLegacyUpdate(d *schema.ResourceData, meta interface{}) error {
-	err := createIndexTemplateLegacy(d, meta)
+func resourceElasticsearchIndexTemplateLegacyUpdate(d *schema.ResourceData, meta interface{}) (err error) {
+	err = createIndexTemplateLegacy(d, meta)
 	if err != nil {
 		return err
 	}
@@ -68,10 +68,10 @@ func resourceElasticsearchIndexTemplateLegacyUpdate(d *schema.ResourceData, meta
 }
 
 // resourceElasticsearchIndexTemplateLegacyRead read index template
-func resourceElasticsearchIndexTemplateLegacyRead(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexTemplateLegacyRead(d *schema.ResourceData, meta interface{}) (err error) {
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
+	client := meta.(eshandler.ElasticsearchHandler).Client()
 	res, err := client.API.Indices.GetTemplate(
 		client.API.Indices.GetTemplate.WithName(id),
 		client.API.Indices.GetTemplate.WithContext(context.Background()),
@@ -107,18 +107,22 @@ func resourceElasticsearchIndexTemplateLegacyRead(d *schema.ResourceData, meta i
 	}
 
 	log.Debugf("Get index template %s successfully:%+v", id, string(indexTemplateJSON))
-	d.Set("name", d.Id())
-	d.Set("template", string(indexTemplateJSON))
+	if err = d.Set("name", d.Id()); err != nil {
+		return err
+	}
+	if err = d.Set("template", string(indexTemplateJSON)); err != nil {
+		return err
+	}
 	return nil
 
 }
 
 // resourceElasticsearchIndexTemplateLegacyDelete delete index template
-func resourceElasticsearchIndexTemplateLegacyDelete(d *schema.ResourceData, meta interface{}) error {
+func resourceElasticsearchIndexTemplateLegacyDelete(d *schema.ResourceData, meta interface{}) (err error) {
 
 	id := d.Id()
 
-	client := meta.(*elastic.Client)
+	client := meta.(eshandler.ElasticsearchHandler).Client()
 	res, err := client.API.Indices.DeleteTemplate(
 		id,
 		client.API.Indices.DeleteTemplate.WithContext(context.Background()),
@@ -147,11 +151,11 @@ func resourceElasticsearchIndexTemplateLegacyDelete(d *schema.ResourceData, meta
 }
 
 // createIndexTemplateLegacy create or update index template
-func createIndexTemplateLegacy(d *schema.ResourceData, meta interface{}) error {
+func createIndexTemplateLegacy(d *schema.ResourceData, meta interface{}) (err error) {
 	name := d.Get("name").(string)
 	template := d.Get("template").(string)
 
-	client := meta.(*elastic.Client)
+	client := meta.(eshandler.ElasticsearchHandler).Client()
 	res, err := client.API.Indices.PutTemplate(
 		name,
 		strings.NewReader(template),

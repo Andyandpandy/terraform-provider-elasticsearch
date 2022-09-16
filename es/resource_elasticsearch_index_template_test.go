@@ -1,11 +1,10 @@
 package es
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
-	elastic "github.com/elastic/go-elasticsearch/v8"
+	eshandler "github.com/disaster37/es-handler/v8"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
@@ -54,18 +53,13 @@ func testCheckElasticsearchIndexTemplateExists(name string) resource.TestCheckFu
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Indices.GetIndexTemplate(
-			client.API.Indices.GetIndexTemplate.WithName(rs.Primary.ID),
-			client.API.Indices.GetIndexTemplate.WithContext(context.Background()),
-			client.API.Indices.GetIndexTemplate.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		it, err := client.IndexTemplateGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			return errors.Errorf("Error when get index template %s: %s", rs.Primary.ID, res.String())
+		if it == nil {
+			return errors.Errorf("Index template %s not found", rs.Primary.ID)
 		}
 
 		return nil
@@ -77,26 +71,22 @@ func testCheckElasticsearchIndexTemplateDestroy(s *terraform.State) error {
 		if rs.Type != "elasticsearch_index_template" {
 			continue
 		}
+		if rs.Primary.ID != "test" {
+			continue
+		}
 
 		meta := testAccProvider.Meta()
 
-		client := meta.(*elastic.Client)
-		res, err := client.API.Indices.DeleteIndexTemplate(
-			rs.Primary.ID,
-			client.API.Indices.DeleteIndexTemplate.WithContext(context.Background()),
-			client.API.Indices.DeleteIndexTemplate.WithPretty(),
-		)
+		client := meta.(eshandler.ElasticsearchHandler)
+		it, err := client.IndexTemplateGet(rs.Primary.ID)
 		if err != nil {
 			return err
 		}
-		defer res.Body.Close()
-		if res.IsError() {
-			if res.StatusCode == 404 {
-				return nil
-			}
+		if it != nil {
+			return fmt.Errorf("Index template %q still exists", rs.Primary.ID)
 		}
 
-		return fmt.Errorf("Index template %q still exists", rs.Primary.ID)
+		return nil
 	}
 
 	return nil
