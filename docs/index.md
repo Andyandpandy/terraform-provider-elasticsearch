@@ -6,10 +6,11 @@ For Elasticsearch 7, you need to use branch and release 7.x
 For Elasticsearch 6, you need to use branch and release 6.x
 
 We fork this project for the following items:
-  - use official golang SDK to consume Elasticsearch API: https://github.com/elastic/go-elasticsearch
-  - implement importer in terraform
-  - migrate to terraform standalone SDK
-  - add some resources
+
+- use official golang SDK to consume Elasticsearch API: https://github.com/elastic/go-elasticsearch
+- implement importer in terraform
+- migrate to terraform standalone SDK
+- add some resources
 
 ## Example Usage
 
@@ -17,7 +18,8 @@ The Elasticsearch provider is used to interact with the
 resources supported by Elasticsearch. The provider needs
 to be configured with an endpoint URL before it can be used.
 
-***Sample:***
+**_Sample:_**
+
 ```tf
 provider "elasticsearch" {
     urls     = "http://elastic.company.com:9200"
@@ -28,15 +30,15 @@ provider "elasticsearch" {
 
 ## Argument Reference
 
-***The following arguments are supported:***
-- **urls**: (required) The list of endpoint Elasticsearch URL, separated by comma.
-- **username**: (optional) The username to connect on it.
-- **password**: (optional) The password to connect on it.
+**_The following arguments are supported:_**
+
+- **urls**: (required) The list of endpoint Elasticsearch URL, separated by comma. Alternatively you can set an environment variable `ELASTICSEARCH_URLS`.
+- **username**: (optional) The username to connect on it. Alternatively you can set an environment variable `ELASTICSEARCH_USERNAME`.
+- **password**: (optional) The password to connect on it. Alternatively you can set an environment variable `ELASTICSEARCH_PASSWORD`.
 - **insecure**: (optional) To disable the certificate check.
 - **cacert_file**: (optional) The CA contend to use if you use custom PKI.
 - **retry**: (optional) The number of time you should to retry connexion befaore exist with error. Default to `6`.
 - **wait_before_retry**: (optional) The number of time in second we wait before each connexion retry. Default to `10`.
-
 
 ## Resource / Data
 
